@@ -17,7 +17,7 @@ if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 from project.helpers import init_client
 
-SAVE_DIR = "/Users/amylee/Desktop/finm37000" # NOTE: Change this to fit ur path
+SAVE_DIR = "/Users/rainc/OneDrive/Desktop/futures/finm37000"               #################### NOTE: Change this to fit ur path ####################
 
 def load_definitions(required_ids, start, end, client, reload=False): 
     """Load futures definitions for the given instrument IDs."""
@@ -40,7 +40,6 @@ def load_definitions(required_ids, start, end, client, reload=False):
             .isin([db.InstrumentClass.FUTURE, "FUTURE", "F"])
             ]
     definitions = definitions.drop_duplicates(subset=["expiration", "instrument_id", "symbol"], keep="last")
-    #definitions["expiration"] = pd.to_datetime(definitions["expiration"]).dt.tz_convert(tz_chicago)
     exp = pd.to_datetime(definitions["expiration"], utc=True)  # treat as UTC
     definitions["expiration"] = exp.dt.tz_convert(tz_chicago).dt.normalize()
     definitions["instrument_id"] = definitions["instrument_id"].astype(int)
@@ -104,7 +103,6 @@ def load_roll_specs(cont_symbols, start, end, client):
         .reset_index(level="symbol")
         .reset_index(drop=True)
     )
-    #roll_df["date"] = pd.to_datetime(roll_df["date"]).dt.tz_localize(tz_chicago)
     roll_df["d0"] = pd.to_datetime(roll_df["d0"]).dt.tz_localize(tz_chicago)
     roll_df["d1"] = pd.to_datetime(roll_df["d1"]).dt.tz_localize(tz_chicago)
     roll_df = roll_df.rename(columns = {"s":"instrument_id"})
@@ -112,28 +110,45 @@ def load_roll_specs(cont_symbols, start, end, client):
 
     return roll_df, required_ids
 
+
 def load_ohlc(start, end, cont_symbols, client, reload=False):
     """Load daily ohlcv-1d data for the continuous symbols."""
-    if reload:
-        ohlcv = client.timeseries.get_range(
-            dataset=db.Dataset.GLBX_MDP3,
-            schema="ohlcv-1d",
-            symbols=cont_symbols,
-            stype_in="continuous",
-            start=start,
-            end=end,
-        ).to_df()
-        ohlcv.to_parquet(f"{SAVE_DIR}/data/ohlcv.parquet") 
-    else:
-        ohlcv = pd.read_parquet(f"{SAVE_DIR}/data/ohlcv.parquet")
+    start_year = pd.to_datetime(start).year
+    end_year = pd.to_datetime(end).year
 
-    ohlcv = ohlcv.reset_index()
+    dfs = []
+
+    for year in range(start_year, end_year + 1):
+        y_start = f"{year}-01-01"
+        y_end = f"{year}-12-31"
+        if year == end_year:
+            y_end = end  
+
+        print(f"Downloading {year}: {y_start} -> {y_end}")
+
+        if reload:
+            ohlcv_year = client.timeseries.get_range(
+                dataset=db.Dataset.GLBX_MDP3,
+                schema="ohlcv-1d",
+                symbols=cont_symbols,
+                stype_in="continuous",
+                start=y_start,
+                end=y_end,
+            ).to_df()             
+
+            ohlcv_year.to_parquet(f"{SAVE_DIR}/data/ohlcv_{year}.parquet")
+        else:
+            ohlcv_year = pd.read_parquet(f"{SAVE_DIR}/data/ohlcv_{year}.parquet")
+
+        dfs.append(ohlcv_year)
+
+    # Combine all years
+    ohlcv = pd.concat(dfs)
+    ohlcv = ohlcv.reset_index()  
     ohlcv["date"] = ohlcv["ts_event"].dt.tz_convert(tz_chicago).dt.normalize()
-    ohlcv = (
-        ohlcv[["date", "ts_event", "instrument_id", "open", "high", "low", "close", "volume", "symbol"]]
-        .sort_values(["date", "symbol"])
-    )
+    ohlcv = (ohlcv[["date", "ts_event", "instrument_id", "open", "high", "low", "close", "volume", "symbol"]].sort_values(["date", "symbol"]))
     return ohlcv
+
 
 
 def load_continuous_futures_data(
@@ -141,7 +156,7 @@ def load_continuous_futures_data(
     start: datetime.date | str,
     end: datetime.date | str,
     parent: str = "CL",
-    reload: bool = False,
+    reload: bool = False,                           ####################  CHANGE TO TRUE TO GET NEW DATA ####################
 ) -> pd.DataFrame:
     """Fetch daily continuous futures with roll metadata attached."""
     # define continous symbols for front month and next two months
@@ -252,7 +267,7 @@ def build_term_structure_history(futures_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main() -> None:
-    start = "2025-01-01" # FIXME: have not tested on longer timeline yet
+    start = "2015-01-01" 
     end = "2025-11-01"
     client = init_client()
     futures_df = load_continuous_futures_data(
@@ -263,6 +278,7 @@ def main() -> None:
     )
     history = build_term_structure_history(futures_df)
     print(history.head())
+    print(history.tail())
 
 
 if __name__ == "__main__":
