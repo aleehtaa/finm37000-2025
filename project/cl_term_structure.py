@@ -19,6 +19,7 @@ from project.helpers import init_client
 
 
 def load_definitions(required_ids, start, end, client, reload=False): 
+    """Load futures definitions for the given instrument IDs."""
     if reload:
         definitions = client.timeseries.get_range(
             dataset=db.Dataset.GLBX_MDP3,
@@ -49,10 +50,7 @@ def _expand_roll_segments(
     roll_df: pd.DataFrame,
     trade_dates,
 ) -> pd.DataFrame:
-    """
-    Expand each roll segment to one row per date between d0 (inclusive) and d1 (exclusive); 
-    Only keep dates that actually exist in OHLC
-    """
+    """Expand roll segments to one row per trade date between d0 (inclusive) and d1 (exclusive)."""
     rows: list[pd.DataFrame] = []
 
     for _, r in roll_df.iterrows():
@@ -79,6 +77,7 @@ def _expand_roll_segments(
 
 
 def load_roll_specs(cont_symbols, start, end, client):
+    """Fetch and flatten roll specs for the continuous symbols."""
     roll_specs = client.symbology.resolve(
         dataset=db.Dataset.GLBX_MDP3,
         symbols=cont_symbols,
@@ -113,7 +112,7 @@ def load_roll_specs(cont_symbols, start, end, client):
     return roll_df, required_ids
 
 def load_ohlc(start, end, cont_symbols, client, reload=False):
-    """Loads ohlc data from databento"""
+    """Load daily ohlcv-1d data for the continuous symbols."""
     if reload:
         ohlcv = client.timeseries.get_range(
             dataset=db.Dataset.GLBX_MDP3,
@@ -142,7 +141,7 @@ def load_continuous_futures_data(
     end: datetime.date | str,
     parent: str = "CL",
 ) -> pd.DataFrame:
-    """Fetch daily continuous futures data"""
+    """Fetch daily continuous futures with roll metadata attached."""
     # define continous symbols for front month and next two months
     cont_symbols = [f"{parent}.c.{i}" for i in (0, 1, 2)]
     
