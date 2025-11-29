@@ -17,6 +17,7 @@ if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 from project.helpers import init_client
 
+SAVE_DIR = "/Users/amylee/Desktop/finm37000" # NOTE: Change this to fit ur path
 
 def load_definitions(required_ids, start, end, client, reload=False): 
     """Load futures definitions for the given instrument IDs."""
@@ -29,9 +30,9 @@ def load_definitions(required_ids, start, end, client, reload=False):
             start=start,
             end=end,
         ).to_df()
-        definitions.to_parquet("/Users/amylee/Desktop/finm37000/data/definitions.parquet")
+        definitions.to_parquet(f"{SAVE_DIR}/data/definitions.parquet")
     else:
-        definitions = pd.read_parquet("/Users/amylee/Desktop/finm37000/data/definitions.parquet")
+        definitions = pd.read_parquet(f"{SAVE_DIR}/data/definitions.parquet")
 
     if "instrument_class" in definitions.columns:
         definitions = definitions[
@@ -122,9 +123,9 @@ def load_ohlc(start, end, cont_symbols, client, reload=False):
             start=start,
             end=end,
         ).to_df()
-        ohlcv.to_parquet("/Users/amylee/Desktop/finm37000/data/ohlcv.parquet") 
+        ohlcv.to_parquet(f"{SAVE_DIR}/data/ohlcv.parquet") 
     else:
-        ohlcv = pd.read_parquet("/Users/amylee/Desktop/finm37000/data/ohlcv.parquet")
+        ohlcv = pd.read_parquet(f"{SAVE_DIR}/data/ohlcv.parquet")
 
     ohlcv = ohlcv.reset_index()
     ohlcv["date"] = ohlcv["ts_event"].dt.tz_convert(tz_chicago).dt.normalize()
@@ -140,6 +141,7 @@ def load_continuous_futures_data(
     start: datetime.date | str,
     end: datetime.date | str,
     parent: str = "CL",
+    reload: bool = False,
 ) -> pd.DataFrame:
     """Fetch daily continuous futures with roll metadata attached."""
     # define continous symbols for front month and next two months
@@ -147,8 +149,8 @@ def load_continuous_futures_data(
     
     # get required data
     roll_df, required_ids = load_roll_specs(cont_symbols=cont_symbols, start=start, end=end, client=client)
-    ohlcv = load_ohlc(cont_symbols=cont_symbols, start=start, end=end, client=client, reload=False)
-    definitions = load_definitions(required_ids=required_ids, start=start, end=end, client=client, reload=False)
+    ohlcv = load_ohlc(cont_symbols=cont_symbols, start=start, end=end, client=client, reload=reload)
+    definitions = load_definitions(required_ids=required_ids, start=start, end=end, client=client, reload=reload)
     
     # merge data together
     trade_dates = ohlcv["date"].unique()
@@ -200,10 +202,10 @@ def compute_slopes(
         msg = "Need at least two maturities to compute slope."
         raise ValueError(msg)
 
-    f1 = float(front_sorted.loc[0, "close"])
-    f2 = float(front_sorted.loc[1, "close"])
-    t1 = float(front_sorted.loc[0, "days_to_expiration"])
-    t2 = float(front_sorted.loc[1, "days_to_expiration"])
+    f1 = float(front_sorted.iloc[0]["close"])
+    f2 = float(front_sorted.iloc[1]["close"])
+    t1 = float(front_sorted.iloc[0]["days_to_expiration"])
+    t2 = float(front_sorted.iloc[1]["days_to_expiration"])
     slope_m1_m2 = (np.log(f2) - np.log(f1)) / (t2 - t1)
 
     target_short, target_long = constant_targets
