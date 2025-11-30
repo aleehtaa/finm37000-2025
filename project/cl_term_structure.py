@@ -256,14 +256,14 @@ def build_term_structure_history(futures_df: pd.DataFrame) -> pd.DataFrame:
         if len(front) < 2:
             continue
         slopes = compute_slopes(front)
-        slope_rows.append({"Trade date": day, **slopes})
-        front_rows.append(front.assign(Trade_date=day))
+        slope_rows.append({"date": day, **slopes})
+        front_rows.append(front.assign(date=day))
 
     front_history = pd.concat(front_rows, ignore_index=True) if front_rows else pd.DataFrame()
     slope_history = pd.DataFrame(slope_rows)
     if front_history.empty:
         return slope_history
-    return front_history.merge(slope_history, left_on="Trade_date", right_on="Trade date", how="right")
+    return front_history.merge(slope_history, on="date", how="right")
 
 
 def main() -> None:
