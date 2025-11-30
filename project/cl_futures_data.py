@@ -15,9 +15,9 @@ from finm37000 import tz_chicago, us_business_day
 
 if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[1]))
-from project.helpers import init_client
 
-SAVE_DIR = "/Users/rainc/OneDrive/Desktop/futures/finm37000"               #################### NOTE: Change this to fit ur path ####################
+from project.helpers import init_client, get_save_dir
+SAVE_DIR = get_save_dir()
 
 def load_definitions(required_ids, start, end, client, reload=False): 
     """Load futures definitions for the given instrument IDs."""
@@ -156,7 +156,7 @@ def load_continuous_futures_data(
     start: datetime.date | str,
     end: datetime.date | str,
     parent: str = "CL",
-    reload: bool = False,                           ####################  CHANGE TO TRUE TO GET NEW DATA ####################
+    reload: bool = False,
 ) -> pd.DataFrame:
     """Fetch daily continuous futures with roll metadata attached."""
     # define continous symbols for front month and next two months
@@ -267,7 +267,7 @@ def build_term_structure_history(futures_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main() -> None:
-    start = "2015-01-01" 
+    start = "2025-01-01" 
     end = "2025-11-01"
     client = init_client()
     futures_df = load_continuous_futures_data(
@@ -275,6 +275,7 @@ def main() -> None:
         start=start,
         end=end,
         parent="CL",
+        reload = False,                            ####################  CHANGE TO TRUE TO GET NEW DATA ####################
     )
     history = build_term_structure_history(futures_df)
     print(history.head())

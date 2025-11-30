@@ -211,10 +211,16 @@ def imply_american_vols(  # noqa: PLR0913
     max_evaluations: int = 200,
     accuracy: float = 1e-6,
     days_per_year: float = 365.0,
+    price_cols: list[str] = ["bid", "midprice", "ask", "weighted_midprice"],
+    use_actual_today: bool = True,
 ) -> dict[str, pd.Series]:
     """Use QuantLib's BAW model to get implied vols."""
     # --- Market setup ---
     today = ql.Date.todaysDate()
+    if not use_actual_today:
+        eval_dt = pd.to_datetime(option_df['date'].iloc[0]).date()
+        today = ql.Date(eval_dt.day, eval_dt.month, eval_dt.year)
+
     ql.Settings.instance().evaluationDate = today
     day_count = ql.Actual365Fixed()
     calendar = ql.NullCalendar()
@@ -259,6 +265,6 @@ def imply_american_vols(  # noqa: PLR0913
             return float("nan")
 
     ivs = {}
-    for col in ["bid", "midprice", "ask", "weighted_midprice"]:
+    for col in price_cols:
         ivs[f"iv_{col}"] = option_df.apply(imply_vol, axis=1, price_col=col)
     return ivs
