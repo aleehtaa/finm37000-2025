@@ -19,7 +19,7 @@ if __package__ is None or __package__ == "":
 from project.helpers import init_client, get_save_dir
 SAVE_DIR = get_save_dir()
 
-def load_definitions(required_ids, start, end, client, reload=False): 
+def load_definitions(required_ids, parent, start, end, client, reload=False): 
     """Load futures definitions for the given instrument IDs."""
     if reload:
         definitions = client.timeseries.get_range(
@@ -43,6 +43,7 @@ def load_definitions(required_ids, start, end, client, reload=False):
     exp = pd.to_datetime(definitions["expiration"], utc=True)  # treat as UTC
     definitions["expiration"] = exp.dt.tz_convert(tz_chicago).dt.normalize()
     definitions["instrument_id"] = definitions["instrument_id"].astype(int)
+    definitions = definitions[definitions["raw_symbol"].str.startswith(parent)]
 
     return definitions[["expiration", "instrument_id", "symbol", "raw_symbol"]]
 
@@ -165,8 +166,7 @@ def load_continuous_futures_data(
     # get required data
     roll_df, required_ids = load_roll_specs(cont_symbols=cont_symbols, start=start, end=end, client=client)
     ohlcv = load_ohlc(cont_symbols=cont_symbols, start=start, end=end, client=client, reload=reload)
-    definitions = load_definitions(required_ids=required_ids, start=start, end=end, client=client, reload=reload)
-    
+    definitions = load_definitions(required_ids=required_ids, parent=parent, start=start, end=end, client=client, reload=reload)
     # merge data together
     trade_dates = ohlcv["date"].unique()
     roll_df = _expand_roll_segments(roll_df=roll_df, trade_dates=trade_dates)
@@ -267,7 +267,7 @@ def build_term_structure_history(futures_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main() -> None:
-    start = "2025-01-01" 
+    start = "2015-01-01" 
     end = "2025-11-01"
     client = init_client()
     futures_df = load_continuous_futures_data(
@@ -275,7 +275,7 @@ def main() -> None:
         start=start,
         end=end,
         parent="CL",
-        reload = False,                            ####################  CHANGE TO TRUE TO GET NEW DATA ####################
+        reload=False,
     )
     history = build_term_structure_history(futures_df)
     print(history.head())
