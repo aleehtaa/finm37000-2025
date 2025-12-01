@@ -245,9 +245,9 @@ def load_options_data(
         opt_df = _add_rate(option_data=opt_df) 
         opt_df = _add_iv(option_data=opt_df)
         opt_df = _add_delta(option_data=opt_df)
-        opt_df.to_parquet(f"{SAVE_DIR}/data/options_data.csv")
+        opt_df.to_parquet(f"{SAVE_DIR}/data/options_data.parquet")
     else:
-        opt_df = pd.read_parquet(f"{SAVE_DIR}/data/options_data.csv")
+        opt_df = pd.read_parquet(f"{SAVE_DIR}/data/options_data.parquet")
 
     return opt_df
 
