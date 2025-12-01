@@ -15,7 +15,6 @@ from finm37000 import (
     us_business_day,
     tz_chicago,
     imply_american_vols,
-    imply_european_vol
 )
 
 if __package__ is None or __package__ == "":
@@ -51,6 +50,7 @@ def _get_range_with_retry(client: db.Historical, retries: int = 3, backoff: floa
 
 def _add_option_close_prices(option_chain, client):
     """Append daily close prices to an option chain from Databento."""
+    # pull close prices for the option symbols
     # get close prices
     start = option_chain["date"].min().date()
     end = option_chain["date"].max().date() + us_business_day*2
@@ -85,17 +85,17 @@ def _add_iv(
     forward_col: str = "uprc",
 ) -> pd.DataFrame:
     """Add American implied vols per date/underlying using the chosen price column."""
-
-    group_cols = ["date", "underlying"]
-
     out = []
-    for _, subset in option_data.groupby(group_cols):
+    # loop over each date and underlying and get vols
+    for _, subset in option_data.groupby(["date", "underlying"]):
+        # check we have a forward for this slice
         if forward_col not in subset.columns:
             msg = f"Missing {forward_col}; cannot run imply_american_vols"
             raise ValueError(msg)
         futures_price = float(subset[forward_col].iloc[0])
         rate = float(subset["rate"].iloc[0])
-
+        
+        # get vols
         vols = imply_american_vols(
             option_df=subset,
             futures_price=futures_price,
@@ -116,12 +116,13 @@ def _add_delta(
     forward_col: str = "uprc",
 ) -> pd.DataFrame:
     """Compute Black forward deltas from implied vols and forward prices."""
+    # get params
     F = option_data[forward_col]
     K = option_data["strike_price"]
     T = option_data["years_to_expiration"]
     vol = option_data["iv"]
     option_class = option_data["instrument_class"]
-    
+    # calc delta
     d1 = (np.log(F / K) + 0.5 * (vol**2) * T) / (vol * np.sqrt(T))
     option_data['delta'] = np.where(
         option_class == "C", 
@@ -136,9 +137,9 @@ def _add_rate(
     option_data: pd.DataFrame,
 ) -> pd.DataFrame:
     """Attach the nearest risk-free rate observation on or before each date."""
-    save_dir = get_save_dir()
+    # merge latest available rate onto each date
     rf = (
-        pd.read_csv(f"{save_dir}/data/risk-free-rate.csv")
+        pd.read_csv(f"{SAVE_DIR}/data/risk-free-rate.csv")
         .rename(columns={"MCALDT": "date", "TMYTM": "rate"})
         .dropna()
     )
@@ -164,6 +165,7 @@ def load_options_chain(
 ) -> pd.DataFrame:
     """Fetch option definitions for underlyings/date range and add time-to-expiry fields."""
     
+    # pull definitions for the parent options and filter to underlyings
     options_def = _get_range_with_retry(
         client=client,
         dataset=db.Dataset.GLBX_MDP3,
@@ -173,9 +175,11 @@ def load_options_chain(
         start=start.date(),
         end=end.date() + us_business_day*2,
     )
+    # filter
     opt_df = options_def.to_df()
     opt_df = opt_df[opt_df["underlying"].isin(underlyings)]
     opt_df = opt_df[opt_df["instrument_class"].isin(("C", "P"))]
+    # time cols / tz conversions
     opt_df["date"] = opt_df["ts_event"].dt.tz_convert(tz_chicago).dt.normalize()
     opt_df["expiration"] = opt_df["expiration"].dt.tz_convert(tz_chicago).dt.normalize()
     opt_df["days_to_expiration"] = (opt_df["expiration"] - opt_df["date"]).dt.days.astype("Int64")
@@ -184,6 +188,7 @@ def load_options_chain(
     )
     opt_df = opt_df[opt_df['date'] >= start]
     opt_df = opt_df[opt_df['date'] < end]
+    # get subset of data 
     cols = ["raw_symbol", "underlying", "instrument_class", "strike_price", "expiration"]
     opt_df = (
         opt_df.reset_index()
@@ -195,13 +200,16 @@ def load_options_chain(
 
 
 def load_options_data(
-    client: db.Historical,
-    futures_data: pd.DataFrame,
+    client: db.Historical | None = None,
+    futures_data: pd.DataFrame | None = None,
     parent: str = "LO",
     reload: bool = False,
     ) -> pd.DataFrame:
     """Build options features per roll window: fetch chains, attach prices/IV/delta, merge with futures."""
     if reload:
+        # ensure futures data supplied when reloading
+        if futures_data is None:
+            raise ValueError("futures_data must be provided when reload=True")
         futures_data = futures_data.rename(columns={"raw_symbol": "underlying", "close": "uprc"})
 
         segments = (
@@ -212,6 +220,10 @@ def load_options_data(
         opt_df = []
         for (window_start, window_end), grp in segments.groupby(["d0", "d1"]):
             underlying_symbols = list(grp["underlying"].unique())
+            # check if client was provided
+            if client is None:
+                raise ValueError("client must be provided when reload=True")
+            # fetch option chain for this window
             opt_chain = load_options_chain(
                 parent=parent,
                 underlyings=underlying_symbols,
@@ -219,7 +231,6 @@ def load_options_data(
                 end=window_end,
                 client=client,
             )
-
             opt_chain = _add_option_close_prices(opt_chain, client) 
             opt_df.append(opt_chain)
 
@@ -228,7 +239,7 @@ def load_options_data(
             .sort_values("date")
             .reset_index(drop=True)
         )
-        # get IV
+        # add options metrics to dataframe
         uprc = (futures_data[["date", "symbol", "underlying", "uprc"]])
         opt_df = opt_df.merge(uprc, how="left", on=["date", "underlying"])
         opt_df = _add_rate(option_data=opt_df) 
@@ -239,7 +250,7 @@ def load_options_data(
         opt_df = pd.read_parquet(f"{SAVE_DIR}/data/options_data.csv")
 
     return opt_df
-    
+
 def calculate_skew(
     options_df: pd.DataFrame,
     target_delta: float = 0.25,
@@ -255,7 +266,7 @@ def calculate_skew(
     - slope_25d = skew_25d / (2 * target_delta)
 
     Uses linear interpolation in delta space when interpolate=True; otherwise picks
-    the closest observed deltas to ±target_delta.
+    the closest observed deltas to plus/minus target_delta.
     """
 
     group_cols = ["date", "underlying", "expiration"]
@@ -264,14 +275,14 @@ def calculate_skew(
     df = options_df.dropna(subset=[vol_col, "delta"])
 
     for (dt, und, exp), grp in df.groupby(group_cols):
+        # seperate calls and puts
         calls = grp[grp["instrument_class"] == "C"].sort_values("delta")
         puts  = grp[grp["instrument_class"] == "P"].sort_values("delta")
-
         if calls.empty or puts.empty:
             continue
-
+        
+        # linearly interpolate prices to get exact price of target_delta call/put
         if interpolate:
-            # need the target delta to be within the observed range
             if not (calls["delta"].min() <= target_delta <= calls["delta"].max()):
                 continue
             if not (puts["delta"].min() <= -target_delta <= puts["delta"].max()):
@@ -313,17 +324,13 @@ def calculate_skew(
     return pd.DataFrame(rows)
 
 def main() -> None:
+    """demonstration for workflow"""
     client = init_client()
-    start = "2025-01-01"
-    end = "2025-11-01"
+    # start = "2015-01-01"
+    # end = "2025-11-01"
 
     # futures
-    futures_df = load_continuous_futures_data(
-        client=client,
-        start=start,
-        end=end,
-        parent="CL",
-    )
+    futures_df = load_continuous_futures_data()
     term_history = build_term_structure_history(futures_df)
 
     # options data
@@ -331,6 +338,7 @@ def main() -> None:
         client=client,
         futures_data=term_history,
         parent="LO",
+        reload=True,
     )
     
     skew_df = calculate_skew(opt_df, target_delta=0.25, vol_col="iv", interpolate=True)
