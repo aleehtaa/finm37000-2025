@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import linalg
 from typing import Sequence
+import statsmodels.api as sm
 
 import warnings
 
@@ -38,11 +39,11 @@ def prepare_data(
     start: str,
     end: str,
     client: db.Historical,
+    constant_targets: Sequence[float] = (21.0, 42.0),
     parent_fut: str = "CL",
     parent_opt: str = "LO",
     reload: bool = False,
     target_delta: float = 0.25,
-    constant_targets : Sequence[float] = (21.0, 42.0)
 ) -> pd.DataFrame:
     """pull futures + options, build slopes and skew, and merge for modeling"""
     # futures with slopes
@@ -53,7 +54,7 @@ def prepare_data(
         parent=parent_fut,
         reload=reload,
     )
-    term_history = build_term_structure_history(futures_df)
+    term_history = build_term_structure_history(futures_df, constant_targets)
 
     # options iv/delta/skew
     opt_df = load_options_data(
@@ -72,23 +73,6 @@ def prepare_data(
     return merged
 
 
-def fit_ols(df: pd.DataFrame, y_col: str, x_cols: list[str]) -> dict[str, float]:
-    """simple ols with intercept, returns params and r2"""
-    X = df[x_cols].to_numpy()
-    y = df[y_col].to_numpy()
-    X = np.column_stack([np.ones(len(X)), X])
-    beta, *_ = linalg.lstsq(X, y)
-    y_hat = X @ beta
-    resid = y - y_hat
-    ss_tot = np.sum((y - y.mean()) ** 2)
-    ss_res = np.sum(resid ** 2)
-    r2 = 1 - ss_res / ss_tot if ss_tot != 0 else np.nan
-    out = {"intercept": beta[0], "r2": r2}
-    for i, col in enumerate(x_cols, start=1):
-        out[col] = beta[i]
-    return out
-
-
 def corr_matrix(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     """quick correlation matrix for selected columns"""
     return df[cols].corr()
@@ -97,6 +81,14 @@ def corr_matrix(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
 def cov_matrix(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     """quick covariance matrix for selected columns"""
     return df[cols].cov()
+
+
+def fit_ols_sm(df: pd.DataFrame, y_col: str, x_cols: list[str]):
+    """statsmodels ols with intercept, returns fitted model"""
+    df_clean = df.dropna(subset=[y_col] + x_cols)
+    X = sm.add_constant(df_clean[x_cols])
+    y = df_clean[y_col]
+    return sm.OLS(y, X).fit()
 
 
 def plot_heatmap(
@@ -120,3 +112,25 @@ def plot_heatmap(
     plt.title(title or "heatmap")
     plt.tight_layout()
     plt.show()
+
+
+def main() -> None:
+    start = "2015-01-01"
+    end = "2025-11-01"
+    client = init_client()
+
+    data = prepare_data(start=start, end=end, client=client, constant_targets=(21.0, 42.0), target_delta=0.25)
+
+    # simple diagnostics
+    core_cols = ["slope_m1_m2", "slope_const_21_42", "skew_25d", "iv_25c", "iv_25p", "atm_iv"]
+    available = [c for c in core_cols if c in data.columns]
+    if available:
+        print(corr_matrix(data, available).head())
+
+    if {"skew_25d", "slope_m1_m2"} <= set(data.columns):
+        res = fit_ols_sm(data, "skew_25d", ["slope_m1_m2"])
+        print(res.summary())
+
+
+if __name__ == "__main__":
+    main()
