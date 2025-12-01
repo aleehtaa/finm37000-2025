@@ -33,40 +33,80 @@ from project.cl_futures_data import (
 
 SAVE_DIR = get_save_dir()
 
-def _get_range_with_retry(client: db.Historical, retries: int = 3, backoff: float = 5.0, **kwargs):
-    """Wrapper around client.timeseries.get_range with simple retry/backoff."""
-    last_exc = None
-    for attempt in range(retries):
+import time
+import databento as db
+
+def get_range_with_retry(
+    client: db.Historical,
+    *,
+    max_retries: int = 5,
+    default_retry_after: int = 1,
+    server_backoff: float = 2.0,
+    **kwargs,
+):
+    """
+    Simple wrapper around client.timeseries.get_range(...) that:
+      - Retries on 429 using the Retry-After header.
+      - Retries on 5xx with a fixed backoff.
+      - Returns the raw DBNStore
+
+    """
+    for attempt in range(1, max_retries + 1):
         try:
             return client.timeseries.get_range(**kwargs)
-        except Exception as exc:  # broad on purpose to catch timeouts
-            last_exc = exc
-            if attempt == retries - 1:
-                raise
-            time.sleep(backoff * (attempt + 1))
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("Unexpected retry loop state")
 
-def _add_option_close_prices(option_chain, client):
+        except db.BentoClientError as e:
+
+            if e.http_status == 429: # 429 (rate limit)
+                headers = e.headers or {}
+                retry_after_str = headers.get("Retry-After", str(default_retry_after))
+                try:
+                    retry_after = int(retry_after_str)
+                except ValueError:
+                    retry_after = default_retry_after
+
+                if attempt == max_retries:
+                    raise
+
+                time.sleep(retry_after)
+                continue
+
+            raise
+
+        except db.BentoServerError as e:
+
+            if attempt == max_retries:
+                raise
+            delay = server_backoff * attempt
+            time.sleep(delay)
+            continue
+
+def _add_option_close_prices(option_chain: pd.DataFrame, client: db.Historical):
     """Append daily close prices to an option chain from Databento."""
     # pull close prices for the option symbols
     # get close prices
     start = option_chain["date"].min().date()
     end = option_chain["date"].max().date() + us_business_day*2
     opt_symbols = option_chain["raw_symbol"].unique()
-    
-    close = _get_range_with_retry(
-        client=client,
-        dataset=db.Dataset.GLBX_MDP3,
-        schema="ohlcv-1d",
-        symbols=[*opt_symbols],
-        stype_in="raw_symbol",
-        start=start,
-        end=end,
-    )
+    max_size = 1900
+    chunks = [opt_symbols[i : i + max_size]
+          for i in range(0, len(opt_symbols), max_size)]
+    opt_df = []
+    for chunk in chunks:
+        close = get_range_with_retry(
+            client=client,
+            dataset=db.Dataset.GLBX_MDP3,
+            schema="ohlcv-1d",
+            symbols=[*chunk],
+            stype_in="raw_symbol",
+            start=start,
+            end=end,
+            limit=1999,
+        )
+        opt_df.append(close.to_df())
+
     opt_df = (
-        close.to_df()
+        pd.concat(opt_df)
         .reset_index()
         .rename(columns={"symbol": "raw_symbol"})
     )
@@ -122,12 +162,16 @@ def _add_delta(
     T = option_data["years_to_expiration"]
     vol = option_data["iv"]
     option_class = option_data["instrument_class"]
-    # calc delta
-    d1 = (np.log(F / K) + 0.5 * (vol**2) * T) / (vol * np.sqrt(T))
-    option_data['delta'] = np.where(
-        option_class == "C", 
+    # calc delta with guards against invalid log inputs
+    valid = (F > 0) & (K > 0) & (vol > 0) & (T > 0)
+    d1 = np.full(len(option_data), np.nan)
+    d1[valid] = (np.log(F[valid] / K[valid]) + 0.5 * (vol[valid] ** 2) * T[valid]) / (
+        vol[valid] * np.sqrt(T[valid])
+    )
+    option_data["delta"] = np.where(
+        option_class == "C",
         norm.cdf(d1),
-        norm.cdf(d1) - 1.0
+        norm.cdf(d1) - 1.0,
     )
     
     return option_data
@@ -166,7 +210,7 @@ def load_options_chain(
     """Fetch option definitions for underlyings/date range and add time-to-expiry fields."""
     
     # pull definitions for the parent options and filter to underlyings
-    options_def = _get_range_with_retry(
+    opt_def = get_range_with_retry(
         client=client,
         dataset=db.Dataset.GLBX_MDP3,
         schema="definition",
@@ -176,7 +220,7 @@ def load_options_chain(
         end=end.date() + us_business_day*2,
     )
     # filter
-    opt_df = options_def.to_df()
+    opt_df = opt_def.to_df()
     opt_df = opt_df[opt_df["underlying"].isin(underlyings)]
     opt_df = opt_df[opt_df["instrument_class"].isin(("C", "P"))]
     # time cols / tz conversions
@@ -309,6 +353,11 @@ def calculate_skew(
 
         skew = iv_25c - iv_25p
         slope = skew / (2.0 * target_delta)
+        atm_iv = linear_interp(
+            x=grp["strike_price"].to_numpy(),
+            y=grp[vol_col].to_numpy(),
+            target=float(grp["uprc"].iloc[0]),
+        )
 
         row_out = {
             "date": dt,
@@ -318,6 +367,7 @@ def calculate_skew(
             "iv_25p": iv_25p,
             "skew_25d": skew,
             "slope_25d": slope,
+            "atm_iv": atm_iv,
         }
         rows.append(row_out)
 
@@ -331,16 +381,15 @@ def main() -> None:
 
     # futures
     futures_df = load_continuous_futures_data(start=start, end=end, client=client)
-    term_history = build_term_structure_history(futures_df)
+    #term_history = build_term_structure_history(futures_df)
 
-    # options data
+    # options
     opt_df = load_options_data(
         client=client,
-        futures_data=term_history,
+        futures_data=futures_df,
         parent="LO",
         reload=True,
     )
-    
     skew_df = calculate_skew(opt_df, target_delta=0.25, vol_col="iv", interpolate=True)
 
 

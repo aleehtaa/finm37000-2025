@@ -241,7 +241,7 @@ def interpolate_price(
 
 def compute_slopes(
     front_df: pd.DataFrame,
-    constant_targets: Sequence[float] = (30.0, 60.0),
+    constant_targets: Sequence[float],
 ) -> dict[str, float]:
     """Compute term-structure slopes for a single trade date."""
 
@@ -279,11 +279,13 @@ def compute_slopes(
     }
 
 
-def build_term_structure_history(futures_df: pd.DataFrame) -> pd.DataFrame:
+def build_term_structure_history(
+    futures_df: pd.DataFrame, 
+    constant_targets : Sequence[float] = (30.0, 60.0)
+) -> pd.DataFrame:
     """Compute daily term-structure slopes from prepared futures data."""
     # loop over dates, compute slopes, keep front contracts, merge results
     slope_rows = []
-    front_rows = []
     for day in futures_df["date"].drop_duplicates():
         day_df = futures_df[futures_df["date"] == day]
         if day_df.empty:
@@ -291,15 +293,12 @@ def build_term_structure_history(futures_df: pd.DataFrame) -> pd.DataFrame:
         front = day_df.sort_values("expiration").head(3)
         if len(front) < 2:
             continue
-        slopes = compute_slopes(front)
+        slopes = compute_slopes(front, constant_targets)
         slope_rows.append({"date": day, **slopes})
-        front_rows.append(front.assign(date=day))
 
-    front_history = pd.concat(front_rows, ignore_index=True) if front_rows else pd.DataFrame()
     slope_history = pd.DataFrame(slope_rows)
-    if front_history.empty:
-        return slope_history
-    return front_history.merge(slope_history, on="date", how="right")
+
+    return slope_history
 
 
 def main() -> None:
@@ -313,7 +312,7 @@ def main() -> None:
         parent="CL",
         reload=False,
     )
-    history = build_term_structure_history(futures_df)
+    history = build_term_structure_history(futures_df) ## NOTE: i'm not sure which ones we want
     print(history.head())
     print(history.tail())
 
