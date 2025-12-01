@@ -326,11 +326,11 @@ def calculate_skew(
 def main() -> None:
     """demonstration for workflow"""
     client = init_client()
-    # start = "2015-01-01"
-    # end = "2025-11-01"
+    start = "2015-01-01"
+    end = "2025-11-01"
 
     # futures
-    futures_df = load_continuous_futures_data()
+    futures_df = load_continuous_futures_data(start=start, end=end, client=client)
     term_history = build_term_structure_history(futures_df)
 
     # options data

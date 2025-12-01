@@ -158,9 +158,9 @@ def load_ohlc(start, end, cont_symbols, client, reload=False):
 
 
 def load_continuous_futures_data(
-    client: db.Historical | None = None,
-    start: datetime.date | str | None = None,
-    end: datetime.date | str| None = None,
+    start: datetime.date | str,
+    end: datetime.date | str,
+    client: db.Historical,
     parent: str = "CL",
     reload: bool = False,
 ) -> pd.DataFrame:
