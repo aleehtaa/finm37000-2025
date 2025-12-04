@@ -14,9 +14,8 @@ from finm37000 import tz_chicago
 from project.utils import init_client, SAVE_DIR
 
 
-def load_definitions(required_ids, parent, start, end, client, reload=False):
+def load_definitions(required_ids, start, end, client, reload=False):
     """Load futures definitions for the given instrument IDs."""
-    # fetch from api or cached parquet
     if reload:
         definitions = client.timeseries.get_range(
             dataset=db.Dataset.GLBX_MDP3,
@@ -36,14 +35,12 @@ def load_definitions(required_ids, parent, start, end, client, reload=False):
                 [db.InstrumentClass.FUTURE, "FUTURE", "F"]
             )
         ]
-    # drop dups, normalize tz, filter by parent root
     definitions = definitions.drop_duplicates(
         subset=["expiration", "instrument_id", "symbol"], keep="last"
     )
     exp = pd.to_datetime(definitions["expiration"], utc=True)  # treat as UTC
     definitions["expiration"] = exp.dt.tz_convert(tz_chicago).dt.normalize()
     definitions["instrument_id"] = definitions["instrument_id"].astype(int)
-    definitions = definitions[definitions["raw_symbol"].str.startswith(parent)]
 
     return definitions[["expiration", "instrument_id", "symbol", "raw_symbol"]]
 
@@ -53,7 +50,6 @@ def _expand_roll_segments(
     trade_dates,
 ) -> pd.DataFrame:
     """Expand roll segments to one row per trade date between d0 (inclusive) and d1 (exclusive)."""
-    # build one row per trade date within each roll window
     rows: list[pd.DataFrame] = []
 
     for _, r in roll_df.iterrows():
@@ -81,7 +77,6 @@ def _expand_roll_segments(
 
 def load_roll_specs(cont_symbols, start, end, client):
     """Fetch and flatten roll specs for the continuous symbols."""
-    # resolve continuous symbols to instrument ids and flatten to a dataframe
     roll_specs = client.symbology.resolve(
         dataset=db.Dataset.GLBX_MDP3,
         symbols=cont_symbols,
@@ -113,7 +108,6 @@ def load_roll_specs(cont_symbols, start, end, client):
 
 def load_ohlc(start, end, cont_symbols, client, reload=False):
     """Load daily ohlcv-1d data for the continuous symbols."""
-    # load ohlcv per year (api or parquet), combine, add date column, sort
     start_year = pd.to_datetime(start).year
     end_year = pd.to_datetime(end).year
 
@@ -164,9 +158,9 @@ def load_ohlc(start, end, cont_symbols, client, reload=False):
 
 
 def load_continuous_futures_data(
+    client: db.Historical,
     start: datetime.date | str,
     end: datetime.date | str,
-    client: db.Historical,
     parent: str = "CL",
     reload: bool = False,
 ) -> pd.DataFrame:
@@ -174,7 +168,7 @@ def load_continuous_futures_data(
     # define continous symbols for front month and next two months
     cont_symbols = [f"{parent}.c.{i}" for i in (0, 1, 2)]
 
-    # get roll specs, prices, definitions
+    # get required data
     roll_df, required_ids = load_roll_specs(
         cont_symbols=cont_symbols, start=start, end=end, client=client
     )
@@ -182,14 +176,10 @@ def load_continuous_futures_data(
         cont_symbols=cont_symbols, start=start, end=end, client=client, reload=reload
     )
     definitions = load_definitions(
-        required_ids=required_ids,
-        parent=parent,
-        start=start,
-        end=end,
-        client=client,
-        reload=reload,
+        required_ids=required_ids, start=start, end=end, client=client, reload=reload
     )
-    # merge data together and add days to expiration
+
+    # merge data together
     trade_dates = ohlcv["date"].unique()
     roll_df = _expand_roll_segments(roll_df=roll_df, trade_dates=trade_dates)
     df = (
@@ -210,57 +200,31 @@ def load_continuous_futures_data(
 
 
 def interpolate_price(
-    expiries_days: Iterable[int],
-    prices: Iterable[float],
-    target_days: float,
+    expiries_days: Iterable[int], prices: Iterable[float], target_days: float
 ) -> float:
-    """Linearly interpolate (or extrapolate) a forward price to a target maturity in days.
-
-    - If target_days is inside the available range, do standard linear interpolation
-      between the surrounding maturities.
-    - If target_days is outside the available range, linearly extrapolate using
-      the nearest two points (front or back).
-    """
-    # sort maturities/prices, pick two points around target (or edge), do linear weight
-
-    dtes = np.array(expiries_days)
-    prcs = np.array(prices)
-
-    # return price if we only have one point
-    if len(prcs) == 1:
-        return float(prcs[0])
-
-    # get position of target days relative to what we ahve
-    idx = np.argsort(dtes)
-    dtes = dtes[idx]
-    prcs = prcs[idx]
-    pos = np.searchsorted(dtes, target_days)
-
-    dte0, prc0, dte1, prc1 = 0.0, 0.0, 0.0, 0.0
-    if pos == 0:  # before first, extrapolate with first two
-        dte0, prc0 = dtes[0], prcs[0]
-        dte1, prc1 = dtes[1], prcs[1]
-    elif pos >= len(dtes):  # after last, extrapolate with last two
-        dte0, prc0 = dtes[-2], prcs[-2]
-        dte1, prc1 = dtes[-1], prcs[-1]
-    else:  # inside range, bracket with neighbors
-        dte0, prc0 = dtes[pos - 1], prcs[pos - 1]
-        dte1, prc1 = dtes[pos], prcs[pos]
-
-    if dte1 == dte0:
-        return float(prc0)
-
-    weight = (target_days - dte0) / (dte1 - dte0)
-    return float(weight * prc1 + (1 - weight) * prc0)
+    """Linearly interpolate a forward price to a target maturity in days."""
+    pairs = sorted(zip(expiries_days, prices), key=lambda p: p[0])
+    lower = [p for p in pairs if p[0] <= target_days]
+    upper = [p for p in pairs if p[0] >= target_days]
+    if not lower or not upper:
+        msg = f"Cannot interpolate: target {target_days}d outside available maturities."
+        raise ValueError(msg)
+    lo_days, lo_px = lower[-1]
+    hi_days, hi_px = upper[0]
+    if hi_days == lo_days:
+        return float(lo_px)
+    weight = (target_days - lo_days) / (hi_days - lo_days)
+    return float(lo_px + weight * (hi_px - lo_px))
 
 
 def compute_slopes(
     front_df: pd.DataFrame,
-    constant_targets: Sequence[float],
+    constant_targets: Sequence[float] = (
+        35.0,
+        60.0,
+    ),  # FIXME: need to figure out what to do about when first month dte is > lower dte, etx
 ) -> dict[str, float]:
     """Compute term-structure slopes for a single trade date."""
-
-    # slope between first two maturities and optional constant-maturity slope
     front_sorted = front_df.sort_values("expiration").reset_index(drop=True)
     if len(front_sorted) < 2:
         msg = "Need at least two maturities to compute slope."
@@ -273,15 +237,14 @@ def compute_slopes(
     slope_m1_m2 = (np.log(f2) - np.log(f1)) / (t2 - t1)
 
     target_short, target_long = constant_targets
-    price_short, price_long = np.nan, np.nan
-
-    # slop for constant expiration using interpolated prices
     days = front_sorted["days_to_expiration"]
     prices = front_sorted["close"]
-
-    price_short = interpolate_price(days, prices, target_short)
-    price_long = interpolate_price(days, prices, target_long)
-
+    price_short = np.nan
+    price_long = np.nan
+    if days.min() <= target_short <= days.max():
+        price_short = interpolate_price(days, prices, target_short)
+    if days.min() <= target_long <= days.max():
+        price_long = interpolate_price(days, prices, target_long)
     slope_const = np.nan
     if not np.isnan(price_short) and not np.isnan(price_long):
         slope_const = (np.log(price_long) - np.log(price_short)) / (
@@ -296,12 +259,10 @@ def compute_slopes(
     }
 
 
-def build_term_structure_history(
-    futures_df: pd.DataFrame, constant_targets: Sequence[float] = (30.0, 60.0)
-) -> pd.DataFrame:
+def build_term_structure_history(futures_df: pd.DataFrame) -> pd.DataFrame:
     """Compute daily term-structure slopes from prepared futures data."""
-    # loop over dates, compute slopes, keep front contracts, merge results
     slope_rows = []
+    front_rows = []
     for day in futures_df["date"].drop_duplicates():
         day_df = futures_df[futures_df["date"] == day]
         if day_df.empty:
@@ -309,17 +270,22 @@ def build_term_structure_history(
         front = day_df.sort_values("expiration").head(3)
         if len(front) < 2:
             continue
-        slopes = compute_slopes(front, constant_targets)
+        slopes = compute_slopes(front)
         slope_rows.append({"date": day, **slopes})
+        front_rows.append(front.assign(date=day))
 
+    front_history = (
+        pd.concat(front_rows, ignore_index=True) if front_rows else pd.DataFrame()
+    )
     slope_history = pd.DataFrame(slope_rows)
-
-    return slope_history
+    if front_history.empty:
+        return slope_history
+    return front_history.merge(slope_history, on="date", how="right")
 
 
 def main() -> None:
     """demonstration for workflow"""
-    start = "2015-01-01"
+    start = "2025-01-01"
     end = "2025-11-01"
     client = init_client()
     futures_df = load_continuous_futures_data(
@@ -329,9 +295,7 @@ def main() -> None:
         parent="CL",
         reload=False,
     )
-    history = build_term_structure_history(
-        futures_df
-    )
+    history = build_term_structure_history(futures_df)
     print(history.head())
     print(history.tail())
 

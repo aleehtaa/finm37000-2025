@@ -1,16 +1,12 @@
-"""Basic modeling harness for CL futures term structure and option skew."""
+"""Modeling for CL futures term structure and option skew."""
 
 from __future__ import annotations
-
-import sys
-from pathlib import Path
 
 import databento as db
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy import linalg
 from typing import Sequence
 import statsmodels.api as sm
 
@@ -18,13 +14,8 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-# make repo imports work when run as script
-repo_root = Path.cwd()
-while not (repo_root / "pyproject.toml").exists() and repo_root != repo_root.parent:
-    repo_root = repo_root.parent
-sys.path.insert(0, str(repo_root))
 
-from project.helpers import init_client
+from project.utils import init_client
 from project.cl_futures_data import (
     load_continuous_futures_data,
     build_term_structure_history,
@@ -33,6 +24,11 @@ from project.cl_options_data import (
     load_options_data,
     calculate_skew,
 )
+
+
+def corr_matrix(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """Return the correlation matrix for selected columns."""
+    return df[cols].corr()
 
 
 def prepare_data(
@@ -63,10 +59,16 @@ def prepare_data(
         parent=parent_opt,
         reload=reload,
     )
-    skew_df = calculate_skew(opt_df, target_delta=target_delta, vol_col="iv", interpolate=True)
+    skew_df = calculate_skew(
+        opt_df, target_delta=target_delta, vol_col="iv", interpolate=True
+    )
 
-    merged = term_history.merge(skew_df, on=["date"], how="inner", )
-    
+    merged = term_history.merge(
+        skew_df,
+        on=["date"],
+        how="inner",
+    )
+
     # sign flag for curve shape (contango/backwardation)
     if "slope_m1_m2" in merged.columns:
         merged["slope_sign"] = np.sign(merged["slope_m1_m2"])
@@ -98,28 +100,39 @@ def plot_heatmap(
             raise ValueError("provide cols when matrix is not supplied")
         matrix = df[cols].corr()
     plt.figure(figsize=(6, 5))
-    sns.heatmap(matrix, annot=True, fmt=fmt, cmap=cmap, vmin=vmin, vmax=vmax, square=True)
+    sns.heatmap(
+        matrix, annot=True, fmt=fmt, cmap=cmap, vmin=vmin, vmax=vmax, square=True
+    )
     plt.title(title or "heatmap")
     plt.tight_layout()
     plt.show()
 
 
 def main() -> None:
+    """demonstration for workflow"""
     start = "2015-01-01"
     end = "2025-11-01"
     client = init_client()
 
-    data = prepare_data(start=start, end=end, client=client, constant_targets=(21.0, 42.0), target_delta=0.25)
+    data = prepare_data(
+        start=start,
+        end=end,
+        client=client,
+        constant_targets=(21.0, 42.0),
+        target_delta=0.25,
+    )
 
-    # simple diagnostics
-    core_cols = ["slope_m1_m2", "slope_const_21_42", "skew_25d", "iv_25c", "iv_25p", "atm_iv"]
-    available = [c for c in core_cols if c in data.columns]
-    if available:
-        print(corr_matrix(data, available).head())
+    core_cols = [
+        "slope_m1_m2",
+        "slope_const_21_42",
+        "skew_25d",
+        "iv_25c",
+        "iv_25p",
+        "atm_iv",
+    ]
 
-    if {"skew_25d", "slope_m1_m2"} <= set(data.columns):
-        res = fit_ols_sm(data, "skew_25d", ["slope_m1_m2"])
-        print(res.summary())
+    res = fit_ols_sm(data, "skew_25d", ["slope_m1_m2"])
+    print(res.summary())
 
 
 if __name__ == "__main__":

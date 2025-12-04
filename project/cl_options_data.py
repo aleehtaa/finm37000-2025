@@ -1,10 +1,9 @@
-"""Compute CL options features (IV, delta, skew) and (optionally) join with futures term structure."""
+"""Compute CL options features (IV, delta, skew)"""
 
 from __future__ import annotations
 
-import sys
 import time
-from pathlib import Path
+from typing import Iterable
 
 import databento as db
 import numpy as np
@@ -17,24 +16,29 @@ from finm37000 import (
     imply_american_vols,
 )
 
-if __package__ is None or __package__ == "":
-    sys.path.append(str(Path(__file__).resolve().parents[1]))
-
-from project.helpers import (
+from project.utils import (
     init_client,
-    linear_interp,
-    get_save_dir,
+    SAVE_DIR,
 )
 
 from project.cl_futures_data import (
     load_continuous_futures_data,
-    build_term_structure_history,
 )
 
-SAVE_DIR = get_save_dir()
 
-import time
-import databento as db
+def linear_interp(
+    x: Iterable[float],
+    y: Iterable[float],
+    target: float,
+) -> float:
+    """Sorted 1D interpolation wrapper around numpy.interp."""
+    x_arr = np.asarray(list(x), dtype=float)
+    y_arr = np.asarray(list(y), dtype=float)
+    idx = np.argsort(x_arr)
+    x_sorted = x_arr[idx]
+    y_sorted = y_arr[idx]
+    return float(np.interp(target, x_sorted, y_sorted))
+
 
 def get_range_with_retry(
     client: db.Historical,
@@ -56,8 +60,7 @@ def get_range_with_retry(
             return client.timeseries.get_range(**kwargs)
 
         except db.BentoClientError as e:
-
-            if e.http_status == 429: # 429 (rate limit)
+            if e.http_status == 429:  # 429 (rate limit)
                 headers = e.headers or {}
                 retry_after_str = headers.get("Retry-After", str(default_retry_after))
                 try:
@@ -74,23 +77,24 @@ def get_range_with_retry(
             raise
 
         except db.BentoServerError as e:
-
             if attempt == max_retries:
                 raise
             delay = server_backoff * attempt
             time.sleep(delay)
             continue
 
+
 def _add_option_close_prices(option_chain: pd.DataFrame, client: db.Historical):
     """Append daily close prices to an option chain from Databento."""
     # pull close prices for the option symbols
     # get close prices
     start = option_chain["date"].min().date()
-    end = option_chain["date"].max().date() + us_business_day*2
+    end = option_chain["date"].max().date() + us_business_day * 2
     opt_symbols = option_chain["raw_symbol"].unique()
     max_size = 1900
-    chunks = [opt_symbols[i : i + max_size]
-          for i in range(0, len(opt_symbols), max_size)]
+    chunks = [
+        opt_symbols[i : i + max_size] for i in range(0, len(opt_symbols), max_size)
+    ]
     opt_df = []
     for chunk in chunks:
         close = get_range_with_retry(
@@ -103,21 +107,19 @@ def _add_option_close_prices(option_chain: pd.DataFrame, client: db.Historical):
             end=end,
             limit=1999,
         )
-        opt_df.append(close.to_df())
+        if close is not None:
+            opt_df.append(close.to_df())
 
-    opt_df = (
-        pd.concat(opt_df)
-        .reset_index()
-        .rename(columns={"symbol": "raw_symbol"})
-    )
+    opt_df = pd.concat(opt_df).reset_index().rename(columns={"symbol": "raw_symbol"})
     opt_df["date"] = opt_df["ts_event"].dt.tz_convert(tz_chicago).dt.normalize()
     option_chain = option_chain.merge(
         opt_df[["date", "instrument_id", "close", "raw_symbol"]],
         how="inner",
-        on=["date", "raw_symbol"]
+        on=["date", "raw_symbol"],
     )
 
     return option_chain
+
 
 def _add_iv(
     option_data: pd.DataFrame,
@@ -134,13 +136,13 @@ def _add_iv(
             raise ValueError(msg)
         futures_price = float(subset[forward_col].iloc[0])
         rate = float(subset["rate"].iloc[0])
-        
+
         # get vols
         vols = imply_american_vols(
             option_df=subset,
             futures_price=futures_price,
             risk_free_rate=rate,
-            price_cols = [price_col],
+            price_cols=[price_col],
             use_actual_today=False,
         )
         subset = subset.assign(**vols)
@@ -173,7 +175,7 @@ def _add_delta(
         norm.cdf(d1),
         norm.cdf(d1) - 1.0,
     )
-    
+
     return option_data
 
 
@@ -188,7 +190,11 @@ def _add_rate(
         .dropna()
     )
     rf["date"] = rf["date"].astype(str).str.replace(".0", "")
-    rf["date"] = pd.to_datetime(rf["date"], format="%Y%m%d", utc=True).dt.tz_convert(tz_chicago).dt.normalize()
+    rf["date"] = (
+        pd.to_datetime(rf["date"], format="%Y%m%d", utc=True)
+        .dt.tz_convert(tz_chicago)
+        .dt.normalize()
+    )
     rf = rf.sort_values("date").drop_duplicates("date", keep="last")
     option_data = pd.merge_asof(
         option_data.sort_values("date"),
@@ -199,7 +205,7 @@ def _add_rate(
     )
     return option_data
 
-    
+
 def load_options_chain(
     parent: str,
     underlyings: list[str],
@@ -208,7 +214,7 @@ def load_options_chain(
     client: db.Historical,
 ) -> pd.DataFrame:
     """Fetch option definitions for underlyings/date range and add time-to-expiry fields."""
-    
+
     # pull definitions for the parent options and filter to underlyings
     opt_def = get_range_with_retry(
         client=client,
@@ -217,7 +223,7 @@ def load_options_chain(
         symbols=f"{parent}.OPT",
         stype_in="parent",
         start=start.date(),
-        end=end.date() + us_business_day*2,
+        end=end.date() + us_business_day * 2,
     )
     # filter
     opt_df = opt_def.to_df()
@@ -226,17 +232,30 @@ def load_options_chain(
     # time cols / tz conversions
     opt_df["date"] = opt_df["ts_event"].dt.tz_convert(tz_chicago).dt.normalize()
     opt_df["expiration"] = opt_df["expiration"].dt.tz_convert(tz_chicago).dt.normalize()
-    opt_df["days_to_expiration"] = (opt_df["expiration"] - opt_df["date"]).dt.days.astype("Int64")
+    opt_df["days_to_expiration"] = (
+        opt_df["expiration"] - opt_df["date"]
+    ).dt.days.astype("Int64")
     opt_df["years_to_expiration"] = (
-        (opt_df["expiration"] - opt_df["date"]).dt.total_seconds() / 365.0 / 24 / 60 / 60
+        (opt_df["expiration"] - opt_df["date"]).dt.total_seconds()
+        / 365.0
+        / 24
+        / 60
+        / 60
     )
-    opt_df = opt_df[opt_df['date'] >= start]
-    opt_df = opt_df[opt_df['date'] < end]
-    # get subset of data 
-    cols = ["raw_symbol", "underlying", "instrument_class", "strike_price", "expiration"]
+    opt_df = opt_df[opt_df["date"] >= start]
+    opt_df = opt_df[opt_df["date"] < end]
+    # get subset of data
+    cols = [
+        "raw_symbol",
+        "underlying",
+        "instrument_class",
+        "strike_price",
+        "expiration",
+    ]
     opt_df = (
-        opt_df.reset_index()
-        [["date", "days_to_expiration", "years_to_expiration"] + cols]
+        opt_df.reset_index()[
+            ["date", "days_to_expiration", "years_to_expiration"] + cols
+        ]
         .sort_values("strike_price")
         .drop_duplicates(subset=cols)
     )
@@ -248,18 +267,19 @@ def load_options_data(
     futures_data: pd.DataFrame | None = None,
     parent: str = "LO",
     reload: bool = False,
-    ) -> pd.DataFrame:
+) -> pd.DataFrame:
     """Build options features per roll window: fetch chains, attach prices/IV/delta, merge with futures."""
     if reload:
         # ensure futures data supplied when reloading
         if futures_data is None:
             raise ValueError("futures_data must be provided when reload=True")
-        futures_data = futures_data.rename(columns={"raw_symbol": "underlying", "close": "uprc"})
-
-        segments = (
-            futures_data[["symbol", "underlying", "d0", "d1", "expiration"]]
-            .drop_duplicates()
+        futures_data = futures_data.rename(
+            columns={"raw_symbol": "underlying", "close": "uprc"}
         )
+
+        segments = futures_data[
+            ["symbol", "underlying", "d0", "d1", "expiration"]
+        ].drop_duplicates()
 
         opt_df = []
         for (window_start, window_end), grp in segments.groupby(["d0", "d1"]):
@@ -275,18 +295,14 @@ def load_options_data(
                 end=window_end,
                 client=client,
             )
-            opt_chain = _add_option_close_prices(opt_chain, client) 
+            opt_chain = _add_option_close_prices(opt_chain, client)
             opt_df.append(opt_chain)
 
-        opt_df = (
-            pd.concat(opt_df)
-            .sort_values("date")
-            .reset_index(drop=True)
-        )
+        opt_df = pd.concat(opt_df).sort_values("date").reset_index(drop=True)
         # add options metrics to dataframe
-        uprc = (futures_data[["date", "symbol", "underlying", "uprc"]])
+        uprc = futures_data[["date", "symbol", "underlying", "uprc"]]
         opt_df = opt_df.merge(uprc, how="left", on=["date", "underlying"])
-        opt_df = _add_rate(option_data=opt_df) 
+        opt_df = _add_rate(option_data=opt_df)
         opt_df = _add_iv(option_data=opt_df)
         opt_df = _add_delta(option_data=opt_df)
         opt_df.to_parquet(f"{SAVE_DIR}/data/options_data.parquet")
@@ -294,6 +310,7 @@ def load_options_data(
         opt_df = pd.read_parquet(f"{SAVE_DIR}/data/options_data.parquet")
 
     return opt_df
+
 
 def calculate_skew(
     options_df: pd.DataFrame,
@@ -321,10 +338,10 @@ def calculate_skew(
     for (dt, und, exp), grp in df.groupby(group_cols):
         # seperate calls and puts
         calls = grp[grp["instrument_class"] == "C"].sort_values("delta")
-        puts  = grp[grp["instrument_class"] == "P"].sort_values("delta")
+        puts = grp[grp["instrument_class"] == "P"].sort_values("delta")
         if calls.empty or puts.empty:
             continue
-        
+
         # linearly interpolate prices to get exact price of target_delta call/put
         if interpolate:
             if not (calls["delta"].min() <= target_delta <= calls["delta"].max()):
@@ -373,6 +390,7 @@ def calculate_skew(
 
     return pd.DataFrame(rows)
 
+
 def main() -> None:
     """demonstration for workflow"""
     client = init_client()
@@ -381,7 +399,6 @@ def main() -> None:
 
     # futures
     futures_df = load_continuous_futures_data(start=start, end=end, client=client)
-    #term_history = build_term_structure_history(futures_df)
 
     # options
     opt_df = load_options_data(
