@@ -73,16 +73,6 @@ def prepare_data(
     return merged
 
 
-def corr_matrix(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    """quick correlation matrix for selected columns"""
-    return df[cols].corr()
-
-
-def cov_matrix(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    """quick covariance matrix for selected columns"""
-    return df[cols].cov()
-
-
 def fit_ols_sm(df: pd.DataFrame, y_col: str, x_cols: list[str]):
     """statsmodels ols with intercept, returns fitted model"""
     df_clean = df.dropna(subset=[y_col] + x_cols)
