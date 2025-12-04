@@ -11,7 +11,7 @@ import pandas as pd
 
 from finm37000 import tz_chicago
 
-from project.utils import init_client, SAVE_DIR
+from utils import init_client, SAVE_DIR
 
 
 def load_definitions(required_ids, parent, start, end, client, reload=False):

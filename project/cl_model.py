@@ -15,12 +15,12 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-from project.utils import init_client
-from project.cl_futures_data import (
+from utils import init_client
+from cl_futures_data import (
     load_continuous_futures_data,
     build_term_structure_history,
 )
-from project.cl_options_data import (
+from cl_options_data import (
     load_options_data,
     calculate_skew,
 )
