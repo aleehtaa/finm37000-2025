@@ -42,3 +42,14 @@ def make_ohlcv(
         .set_index(out_index_name)
     )
     return resampled_df
+
+
+def aggregate_ohlcv(trades: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate OHLCV by symbol, not resampled."""
+    return trades.groupby("symbol").agg(
+        open=("price", "first"),
+        high=("price", "max"),
+        low=("price", "min"),
+        close=("price", "last"),
+        volume=("size", "sum"),
+    )

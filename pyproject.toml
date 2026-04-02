@@ -34,14 +34,17 @@ demo = [
     "jupyter",
     "matplotlib",
     "pandas",
-    "pandas-stubs",
     "plotly",
     "quantlib",
     "scipy",
+    "scikit-learn",
+    "statsmodels",
     "torch"
 ]
 dev = [
     "pandas-stubs",
+    "plotly-stubs",
+    "scipy-stubs",
     "pytest >= 8.0.0",
     "mypy >= 1.10",
     "ruff >= 0.12.0",
@@ -54,10 +57,11 @@ demo = [
     "jupyter",
     "matplotlib",
     "pandas",
-    "pandas-stubs",
     "plotly",
     "quantlib",
     "scipy",
+    "scikit-learn",
+    "statsmodels",
     "torch"
 ]
 test = [
@@ -67,6 +71,8 @@ lint = [
     "mypy >= 1.10",
     "ruff >= 0.12.0",
     "pandas-stubs",
+    "plotly-stubs",
+    "scipy-stubs",
 ]
 dev = [
     { include-group = "lint" },
@@ -91,6 +97,10 @@ packages = [
     "finm37000",
     "tests",
 ]
+
+[[tool.mypy.overrides]]
+module = "QuantLib"
+ignore_missing_imports = true
 
 [tool.ruff.lint]
 select=[
